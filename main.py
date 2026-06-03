@@ -114,6 +114,7 @@ def main():
     last_detection_time = 0  # timestamp of last API call
 
     print("Running — press Q to quit.")
+    cv2.namedWindow("Object Detector", cv2.WINDOW_NORMAL)
 
     while True:
         ret, frame = cap.read()
@@ -136,7 +137,10 @@ def main():
         # ── Display ────────────────────────────────────────────────────────
         cv2.imshow("Object Detector", display_frame)
 
+        # Quit if Q is pressed OR the window X button is clicked
         if cv2.waitKey(1) & 0xFF == ord("q"):
+            break
+        if cv2.getWindowProperty("Object Detector", cv2.WND_PROP_VISIBLE) < 1:
             break
 
     cap.release()
