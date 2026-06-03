@@ -5,9 +5,13 @@ import json
 import time
 from PIL import Image
 import io
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-API_KEY        = "your-api-key-here"
+API_KEY        = os.getenv("ANTHROPIC_API_KEY")
 MODEL          = "claude-opus-4-6"
 DETECTION_INTERVAL = 1.5   # seconds between API calls
 # ──────────────────────────────────────────────────────────────────────────────
