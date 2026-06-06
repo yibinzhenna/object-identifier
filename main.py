@@ -7,23 +7,29 @@ from PIL import Image
 import io
 from dotenv import load_dotenv
 import os
+import threading
 
 load_dotenv()
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-API_KEY        = os.getenv("ANTHROPIC_API_KEY")
-MODEL          = "claude-opus-4-6"
+API_KEY            = os.getenv("ANTHROPIC_API_KEY")
+MODEL              = "claude-opus-4-6"
 DETECTION_INTERVAL = 1.5   # seconds between API calls
 # ──────────────────────────────────────────────────────────────────────────────
 
 client = anthropic.Anthropic(api_key=API_KEY)
 
+# Shared state between the main thread and detection thread
+detections      = []          # latest bounding box results
+detecting       = False       # True while an API call is in flight
+detection_lock  = threading.Lock()
+
 
 def encode_frame(frame):
     """Convert an OpenCV frame to a base64 string for the API."""
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    rgb     = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     pil_img = Image.fromarray(rgb)
-    buffer = io.BytesIO()
+    buffer  = io.BytesIO()
     pil_img.save(buffer, format="JPEG")
     return base64.standard_b64encode(buffer.getvalue()).decode("utf-8")
 
@@ -80,6 +86,22 @@ x and y are the top-left corner of the bounding box."""
     return json.loads(raw)
 
 
+def detection_thread(frame):
+    """
+    Runs detect_objects in the background and updates shared state.
+    The camera loop never waits for this — it runs freely.
+    """
+    global detections, detecting
+    try:
+        result = detect_objects(frame)
+        with detection_lock:
+            detections = result
+    except Exception as e:
+        print(f"Detection error: {e}")
+    finally:
+        detecting = False  # signal that the thread is done
+
+
 def draw_detections(frame, detections):
     """
     Draw bounding boxes and labels onto the frame.
@@ -89,10 +111,10 @@ def draw_detections(frame, detections):
 
     for obj in detections:
         # Convert normalized coords → pixel coords
-        x1 = int(obj["x"] * w)
-        y1 = int(obj["y"] * h)
-        x2 = int((obj["x"] + obj["w"]) * w)
-        y2 = int((obj["y"] + obj["h"]) * h)
+        x1    = int(obj["x"] * w)
+        y1    = int(obj["y"] * h)
+        x2    = int((obj["x"] + obj["w"]) * w)
+        y2    = int((obj["y"] + obj["h"]) * h)
         label = obj["label"]
 
         # Bounding box
@@ -108,14 +130,15 @@ def draw_detections(frame, detections):
 
 
 def main():
+    global detecting
+
     cap = cv2.VideoCapture(0)  # 0 = default webcam
 
     if not cap.isOpened():
         print("Error: Could not open webcam.")
         return
 
-    detections = []          # holds the latest detection results
-    last_detection_time = 0  # timestamp of last API call
+    last_detection_time = 0
 
     print("Running — press Q to quit.")
     cv2.namedWindow("Object Detector", cv2.WINDOW_NORMAL)
@@ -126,17 +149,19 @@ def main():
             print("Error: Failed to read frame.")
             break
 
-        # ── Detection (throttled to DETECTION_INTERVAL) ────────────────────
+        # ── Detection (runs in background thread) ──────────────────────────
         now = time.time()
-        if now - last_detection_time >= DETECTION_INTERVAL:
-            try:
-                detections = detect_objects(frame)
-                last_detection_time = now
-            except Exception as e:
-                print(f"Detection error: {e}")
+        if not detecting and (now - last_detection_time >= DETECTION_INTERVAL):
+            detecting            = True
+            last_detection_time  = now
+            t = threading.Thread(target=detection_thread, args=(frame.copy(),))
+            t.daemon = True     # thread dies automatically if main program exits
+            t.start()
 
-        # ── Drawing ────────────────────────────────────────────────────────
-        display_frame = draw_detections(frame.copy(), detections)
+        # ── Drawing (uses last known detections, never blocks) ─────────────
+        with detection_lock:
+            current_detections = list(detections)
+        display_frame = draw_detections(frame.copy(), current_detections)
 
         # ── Display ────────────────────────────────────────────────────────
         cv2.imshow("Object Detector", display_frame)
